@@ -4,7 +4,7 @@ import SensorNode from '../models/SensorNode.js';
 
 const calculateRouteExposure = async (geometryCoordinates) => {
   const lineString = turf.lineString(geometryCoordinates);
-  const sampledPoints = turf.lineChunk(lineString, 0.5, { units: 'kilometers' });
+  const sampledPoints = turf.lineChunk(lineString, 1, { units: 'kilometers' });
 
   let totalPm25Exposure = 0;
   let sampleCount = 0;
@@ -12,27 +12,38 @@ const calculateRouteExposure = async (geometryCoordinates) => {
   for (const feature of sampledPoints.features) {
     const [lng, lat] = feature.geometry.coordinates[0];
 
-    const nearestSensor = await SensorNode.findOne({
-      location: {
-        $near: {
-          $geometry: { type: 'Point', coordinates: [lng, lat] },$maxDistance: 10000 // 10 km
+    try {
+      const nearestSensor = await SensorNode.findOne({
+        location: {
+          $near: {
+            $geometry: { type: 'Point', coordinates: [lng, lat] },$maxDistance: 25000 // 25 km radius
+          }
         }
-      }
-    });
+      });
 
-    const nodePm25 = nearestSensor ? nearestSensor.pm25 : 50;
-    totalPm25Exposure += nodePm25;
+      const nodePm25 = nearestSensor ? nearestSensor.pm25 : 85;
+      totalPm25Exposure += nodePm25;
+    } catch (err) {
+      totalPm25Exposure += 85;
+    }
     sampleCount++;
   }
 
-  const averagePm25 = sampleCount > 0 ? totalPm25Exposure / sampleCount : 50;
+  const averagePm25 = sampleCount > 0 ? totalPm25Exposure / sampleCount : 85;
   return Math.round(averagePm25);
 };
 
 export const getDualRoutes = async (startLng, startLat, endLng, endLat) => {
   const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson&alternatives=true`;
   
-  const response = await axios.get(osrmUrl);
+  // Custom User-Agent prevents OSRM from returning 403 Forbidden
+  const response = await axios.get(osrmUrl, {
+    headers: {
+      'User-Agent': 'BreatheRouteApp/1.0 (MERN Student Project)'
+    },
+    timeout: 8000
+  });
+
   const routes = response.data.routes;
 
   if (!routes || routes.length === 0) {

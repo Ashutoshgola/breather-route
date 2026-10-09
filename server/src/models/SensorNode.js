@@ -17,7 +17,7 @@ const sensorNodeSchema = new mongoose.Schema({
       default: 'Point',
     },
     coordinates: {
-      type: [Number], // [longitude, latitude]
+      type: [Number], // [lng, lat]
       required: true,
     },
   },
@@ -32,6 +32,7 @@ const sensorNodeSchema = new mongoose.Schema({
   },
 });
 
+// IMPORTANT: Must have 2dsphere index for $near queries
 sensorNodeSchema.index({ location: '2dsphere' });
 
 export default mongoose.model('SensorNode', sensorNodeSchema);

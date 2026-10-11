@@ -34,7 +34,15 @@ mongoose
   .connect(MONGO_URI)
   .then(() => {
     console.log(' Connected to MongoDB');
-    fetchAndSaveLatestAQI();
+    const refreshSensorData = () => {
+      fetchAndSaveLatestAQI().catch((err) => {
+        console.error('[AQI Ingest Error]:', err.message);
+      });
+    };
+
+    refreshSensorData();
+    const aqiRefreshInterval = setInterval(refreshSensorData, 5 * 60 * 1000);
+    aqiRefreshInterval.unref();
     app.listen(PORT, '0.0.0.0', () => {
       console.log(` Server running on http://localhost:${PORT}`);
     });

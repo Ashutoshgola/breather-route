@@ -2,6 +2,11 @@ import axios from 'axios';
 import * as turf from '@turf/turf';
 import SensorNode from '../models/SensorNode.js';
 
+const VEHICLE_PROFILES = {
+  erickshaw: { maxSpeedKph: 25, exposureMultiplier: 1.2 },
+  carAuto: { maxSpeedKph: 60, exposureMultiplier: 1 },
+};
+
 const osrmRequest = async (coordinates) => {
   const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson&alternatives=true`;
 
@@ -112,19 +117,44 @@ const createAlternativeRoute = async (primaryRoute, startLng, startLat, endLng, 
   };
 };
 
-const evaluateRoute = async (route, index) => {
-  const exposureScore = await calculateRouteExposure(route.geometry.coordinates);
+const evaluateRoute = async (route, index, vehicleProfile) => {
+  const { maxSpeedKph, exposureMultiplier } = VEHICLE_PROFILES[vehicleProfile];
+  const avgPm25 = await calculateRouteExposure(route.geometry.coordinates);
+  const minimumDurationSeconds = (route.distance / 1000 / maxSpeedKph) * 3600;
+
   return {
     id: `route_${index + 1}_${Date.now()}`,
-    durationMinutes: Math.round(route.duration / 60),
+    durationMinutes: Math.ceil(Math.max(route.duration, minimumDurationSeconds) / 60),
     distanceKm: (route.distance / 1000).toFixed(2),
-    avgPm25: exposureScore,
+    avgPm25,
+    exposureScore: Math.round(avgPm25 * exposureMultiplier),
     geometry: route.geometry,
     isGeneratedAlternative: Boolean(route.isGeneratedAlternative),
   };
 };
 
-export const getDualRoutes = async (startLng, startLat, endLng, endLat) => {
+export const getSensorNodes = async () => SensorNode.find({
+  location: {
+    $geoWithin: {
+      $geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [76.7, 28.2],
+          [77.7, 28.2],
+          [77.7, 29.0],
+          [76.7, 29.0],
+          [76.7, 28.2],
+        ]],
+      },
+    },
+  },
+})
+  .select('stationId name location pm25 lastUpdated')
+  .sort({ lastUpdated: -1 })
+  .lean();
+
+export const getDualRoutes = async (startLng, startLat, endLng, endLat, vehicleProfile = 'carAuto') => {
+  const selectedVehicle = VEHICLE_PROFILES[vehicleProfile] ? vehicleProfile : 'carAuto';
   const routes = await osrmRequest(`${startLng},${startLat};${endLng},${endLat}`);
 
   if (!routes || routes.length === 0) {
@@ -152,11 +182,13 @@ export const getDualRoutes = async (startLng, startLat, endLng, endLat) => {
     });
   }
 
-  const evaluatedRoutes = await Promise.all(distinctRoutes.map(evaluateRoute));
+  const evaluatedRoutes = await Promise.all(
+    distinctRoutes.map((route, index) => evaluateRoute(route, index, selectedVehicle))
+  );
   const fastestRoute = [...evaluatedRoutes].sort((a, b) => a.durationMinutes - b.durationMinutes)[0];
   const healthiestRoute = [...evaluatedRoutes]
     .filter((route) => route.id !== fastestRoute.id)
-    .sort((a, b) => a.avgPm25 - b.avgPm25)[0];
+    .sort((a, b) => a.exposureScore - b.exposureScore)[0];
 
   if (!healthiestRoute || !hasDistinctGeometry(fastestRoute.geometry, healthiestRoute.geometry)) {
     throw new Error('Unable to generate two distinct routes for the selected locations.');

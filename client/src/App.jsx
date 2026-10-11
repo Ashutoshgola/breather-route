@@ -1,25 +1,39 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON, Marker, Popup, CircleMarker, Tooltip, useMapEvents, useMap } from 'react-leaflet';
 import axios from 'axios';
-import { Navigation, ShieldCheck, Zap, Wind, ArrowRightLeft, X } from 'lucide-react';
+import { Award, Navigation, ShieldCheck, Zap, Wind, ArrowRightLeft, X } from 'lucide-react';
 import L from 'leaflet';
 import LocationSearch from './components/LocationSearch';
+import CertificateModal from './components/CertificateModal';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ||
+  `${window.location.protocol}//${window.location.hostname}:5001`;
 
 const DEMO_PRESETS = [
   {
-    label: 'Anand Vihar (185) → CP',
-    origin: { lat: 28.65, lng: 77.315, name: 'Anand Vihar, Delhi' },
-    destination: { lat: 28.6315, lng: 77.2167, name: 'Connaught Place, New Delhi' },
-  },
-  {
-    label: 'Noida Sec 62 (140) → CP',
+    label: 'Sector 62, Noida → Connaught Place',
     origin: { lat: 28.62, lng: 77.363, name: 'Sector 62, Noida' },
+    destination: { lat: 28.63, lng: 77.219, name: 'Connaught Place, New Delhi' },
+  },
+  {
+    label: 'Wazirpur → Cyber City',
+    origin: { lat: 28.7005, lng: 77.165, name: 'Wazirpur Industrial Area, Delhi' },
+    destination: { lat: 28.49, lng: 77.088, name: 'Cyber City, Gurugram' },
+  },
+  {
+    label: 'Anand Vihar → India Gate',
+    origin: { lat: 28.65, lng: 77.315, name: 'Anand Vihar, Delhi' },
+    destination: { lat: 28.6129, lng: 77.2295, name: 'India Gate, New Delhi' },
+  },
+  {
+    label: 'Wazirpur → Connaught Place',
+    origin: { lat: 28.7005, lng: 77.165, name: 'Wazirpur Industrial Area, Delhi' },
     destination: { lat: 28.6315, lng: 77.2167, name: 'Connaught Place, New Delhi' },
   },
   {
-    label: 'Anand Vihar (185) → Cyber City',
-    origin: { lat: 28.65, lng: 77.315, name: 'Anand Vihar, Delhi' },
-    destination: { lat: 28.495, lng: 77.088, name: 'Cyber City, Gurugram' },
+    label: 'Bawana → Lodhi Garden',
+    origin: { lat: 28.798, lng: 77.048, name: 'Bawana Industrial Area, Delhi' },
+    destination: { lat: 28.5931, lng: 77.2197, name: 'Lodhi Garden, New Delhi' },
   },
 ];
 
@@ -62,6 +76,48 @@ function MapFitBounds({ bounds }) {
   return null;
 }
 
+const BASEMAP_SOURCES = [
+  {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles &copy; Esri — Source: Esri, DeLorme, NAVTEQ, TomTom, Intermap, increment P, GEBCO, USGS, FAO, NPS, NRCAN, GeoBase, Kadaster NL, Ordnance Survey, Esri Japan, METI, Esri China (Hong Kong), swisstopo, and the GIS User Community',
+  },
+  {
+    url: 'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  },
+];
+
+function BasemapLayer() {
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const [allSourcesFailed, setAllSourcesFailed] = useState(false);
+  const source = BASEMAP_SOURCES[sourceIndex];
+
+  return (
+    <>
+      <TileLayer
+        key={sourceIndex}
+        attribution={source.attribution}
+        url={source.url}
+        eventHandlers={{
+          tileload: () => setAllSourcesFailed(false),
+          tileerror: () => {
+            if (sourceIndex < BASEMAP_SOURCES.length - 1) {
+              setSourceIndex((currentIndex) => currentIndex + 1);
+            } else {
+              setAllSourcesFailed(true);
+            }
+          },
+        }}
+      />
+      {allSourcesFailed && (
+        <div className="pointer-events-none absolute bottom-10 left-1/2 z-[1000] -translate-x-1/2 rounded-lg bg-slate-950/90 px-3 py-2 text-xs text-white shadow-lg">
+          Map tiles are unavailable. Check your internet connection and refresh.
+        </div>
+      )}
+    </>
+  );
+}
+
 function MapClickHandler({ enabled, onLocationSelect }) {
   useMapEvents({
     click(e) {
@@ -70,6 +126,16 @@ function MapClickHandler({ enabled, onLocationSelect }) {
   });
   return null;
 }
+
+const readSavedPoints = () => {
+  try {
+    const saved = Number(window.localStorage.getItem('breathe-route-points'));
+    return Number.isFinite(saved) && saved >= 0 ? saved : 0;
+  } catch (error) {
+    console.warn('BreathePoints could not be loaded from local storage:', error);
+    return 0;
+  }
+};
 
 export default function App() {
   const [startPos, setStartPos] = useState({ lat: 28.6315, lng: 77.2167, name: 'Connaught Place, New Delhi' });
@@ -86,11 +152,15 @@ export default function App() {
   const [routeKey, setRouteKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [breathePoints, setBreathePoints] = useState(readSavedPoints);
+  const [certificateOpen, setCertificateOpen] = useState(false);
+  const [lastAwardedRouteId, setLastAwardedRouteId] = useState(null);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     const fetchSensors = async () => {
       try {
-        const response = await axios.get('http://localhost:5001/api/routes/sensors');
+        const response = await axios.get(`${API_BASE_URL}/api/routes/sensors`);
         setSensorNodes(response.data);
         setSensorError('');
       } catch (err) {
@@ -111,10 +181,12 @@ export default function App() {
       return;
     }
 
+    const requestId = ++requestIdRef.current;
+    setRoutes(null);
     setLoading(true);
     setError('');
     try {
-      const response = await axios.get('http://localhost:5001/api/routes', {
+      const response = await axios.get(`${API_BASE_URL}/api/routes`, {
         params: {
           startLng: origin.lng,
           startLat: origin.lat,
@@ -125,12 +197,23 @@ export default function App() {
           vehicleProfile: profile,
         },
       });
+      if (requestId !== requestIdRef.current) return;
+      if (!response.data?.fastest?.geometry || !response.data?.healthiest?.geometry) {
+        throw new Error('The routing service did not return both route options.');
+      }
+      const fastestGeometry = JSON.stringify(response.data.fastest.geometry.coordinates);
+      const healthiestGeometry = JSON.stringify(response.data.healthiest.geometry.coordinates);
+      if (fastestGeometry === healthiestGeometry) {
+        throw new Error('The routing service returned duplicate route options.');
+      }
       setRoutes(response.data);
-      setRouteKey(Date.now());
+      setRouteKey((currentKey) => currentKey + 1);
+      setLastAwardedRouteId(null);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       setError(err.response?.data?.error || 'Failed to calculate routes.');
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   };
 
@@ -153,6 +236,21 @@ export default function App() {
     setVehicleProfile(profile);
     if (Number.isFinite(startPos.lat) && Number.isFinite(endPos.lat)) {
       requestRoutes(startPos, endPos, profile);
+    }
+  };
+
+  const handleSelectHealthiestRoute = () => {
+    setActiveRoute('healthiest');
+    const routeId = routes?.healthiest?.id;
+    if (!routeId || lastAwardedRouteId === routeId || !(healthImpact?.pm25Saved > 0)) return;
+
+    const nextPoints = breathePoints + 10;
+    setBreathePoints(nextPoints);
+    setLastAwardedRouteId(routeId);
+    try {
+      window.localStorage.setItem('breathe-route-points', String(nextPoints));
+    } catch (error) {
+      console.warn('BreathePoints could not be saved to local storage:', error);
     }
   };
 
@@ -209,18 +307,26 @@ export default function App() {
       {/* Floating Google Maps Overlay Panel */}
       <div className="absolute top-4 left-4 z-[1000] flex max-h-[calc(100vh-2rem)] w-[min(24rem,calc(100vw-2rem))] flex-col gap-3 overflow-y-auto pointer-events-auto">
         <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-700 p-4 rounded-2xl shadow-2xl">
-          <div className="flex items-center justify-between mb-4">
+          <div className="mb-4 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Wind className="text-emerald-400 w-6 h-6" />
               <h1 className="text-lg font-bold tracking-wide text-white">BreatheRoute</h1>
             </div>
-            <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20 font-medium">
-              Delhi-NCR
-            </span>
+            <button
+              type="button"
+              onClick={() => setCertificateOpen(true)}
+              aria-label={`Open Clean Air Champion certificate, ${breathePoints} BreathePoints`}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1.5 text-[10px] font-bold text-amber-200 transition hover:border-amber-300/70 hover:bg-amber-400/20"
+            >
+              <Award className="h-3.5 w-3.5" />
+              {breathePoints} pts
+            </button>
           </div>
 
           <div className="mb-3">
-            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Demo presets · tap to load</p>
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              Pollution hotspot demos · sensor-based PM2.5 estimates
+            </p>
             <div className="flex gap-1.5 overflow-x-auto pb-1">
               {DEMO_PRESETS.map((preset) => (
                 <button
@@ -254,12 +360,16 @@ export default function App() {
                       : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
                   }`}
                 >
-                  {profile.label}
+                  {profile.id === 'erickshaw'
+                    ? '🛵 E-Rickshaw / Bike (Open-Air)'
+                    : '🚗 Car / Auto (Closed-Cab)'}
                 </button>
               ))}
             </div>
             {vehicleProfile === 'erickshaw' && (
-              <p className="mt-1 text-[10px] text-emerald-300">25 km/h speed cap · increased exposure weighting</p>
+              <p className="mt-1 text-[10px] leading-relaxed text-emerald-300">
+                25 km/h speed cap · open-air exposure weighting. Expressway avoidance is not supported by the current public routing profile.
+              </p>
             )}
           </div>
 
@@ -268,6 +378,7 @@ export default function App() {
               placeholder="Choose starting location..."
               value={startPos.name}
               iconColor="text-emerald-400"
+              onLocationInput={() => setStartPos((position) => ({ ...position, lat: null, lng: null }))}
               onSelectLocation={(loc) => {
                 setStartPos(loc);
                 if (Number.isFinite(loc.lat)) {
@@ -281,6 +392,7 @@ export default function App() {
               placeholder="Choose destination..."
               value={endPos.name}
               iconColor="text-blue-400"
+              onLocationInput={() => setEndPos((position) => ({ ...position, lat: null, lng: null }))}
               onSelectLocation={(loc) => {
                 setEndPos(loc);
                 if (Number.isFinite(loc.lat)) {
@@ -362,7 +474,7 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setActiveRoute('healthiest')}
+            onClick={handleSelectHealthiestRoute}
             aria-pressed={activeRoute === 'healthiest'}
             className={`w-full text-left p-3 border rounded-xl transition ${
               activeRoute === 'healthiest'
@@ -375,13 +487,18 @@ export default function App() {
                 <ShieldCheck className="w-4 h-4" /> Healthiest Route
               </span>
               <span className="text-xs font-mono bg-emerald-900/60 text-emerald-200 px-2 py-0.5 rounded-md">
-                Exposure: ~{routes.healthiest.exposureScore ?? routes.healthiest.avgPm25} µg/m³
+                Exposure: ~{Number(routes.healthiest.exposureScore ?? routes.healthiest.avgPm25).toFixed(1)} µg/m³
               </span>
             </div>
             <div className="text-xs text-slate-300 flex justify-between mt-2">
               <span>⏱️ {routes.healthiest.durationMinutes} mins</span>
               <span>📏 {routes.healthiest.distanceKm} km</span>
             </div>
+            {lastAwardedRouteId === routes.healthiest.id && (
+              <span className="mt-2 block text-[10px] font-semibold text-amber-300">
+                🏆 +10 BreathePoints earned
+              </span>
+            )}
             {routes.healthiest.isGeneratedAlternative && (
               <span className="mt-2 block text-[10px] text-amber-300">
                 Generated alternative — OSRM did not return another road route
@@ -412,6 +529,11 @@ export default function App() {
                   ? `Equivalent to ~${Math.abs(healthImpact.cigaretteEquivalent).toFixed(2)} cigarettes of additional pollution exposure on this commute.`
                   : `Equivalent to avoiding ~${healthImpact.cigaretteEquivalent.toFixed(2)} cigarettes of pollution exposure on this commute.`}
               </p>
+              {healthImpact.pm25Saved < 0 && (
+                <p className="mt-2 border-t border-amber-400/20 pt-2 text-[10px] leading-relaxed text-amber-200">
+                  Current sensor estimates show higher PM2.5 on the alternate route; no BreathePoints are awarded for this selection.
+                </p>
+              )}
             </div>
           )}
 
@@ -430,7 +552,7 @@ export default function App() {
                 <Zap className="w-4 h-4" /> Fastest Route
               </span>
               <span className="text-xs font-mono bg-blue-900/60 text-blue-200 px-2 py-0.5 rounded-md">
-                Exposure: ~{routes.fastest.exposureScore ?? routes.fastest.avgPm25} µg/m³
+                Exposure: ~{Number(routes.fastest.exposureScore ?? routes.fastest.avgPm25).toFixed(1)} µg/m³
               </span>
             </div>
             <div className="text-xs text-slate-300 flex justify-between mt-2">
@@ -448,11 +570,14 @@ export default function App() {
       </div>
             {/* Leaflet Map Fullscreen Canvas */}
       <div className="absolute inset-0 z-0 h-full w-full">
-              <MapContainer center={mapCenter} zoom={12} style={{ width: '100%', height: '100vh' }} zoomControl={false}>
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
+        <MapContainer
+          center={mapCenter}
+          zoom={12}
+          style={{ width: '100%', height: '100vh' }}
+          className="h-screen w-full"
+          zoomControl={false}
+        >
+          <BasemapLayer />
 
           <MapRecenter center={mapBounds ? null : mapCenter} />
           <MapFitBounds bounds={mapBounds} />
@@ -514,6 +639,12 @@ export default function App() {
             ))}
         </MapContainer>
       </div>
+      {certificateOpen && (
+        <CertificateModal
+          points={breathePoints}
+          onClose={() => setCertificateOpen(false)}
+        />
+      )}
     </div>
   );
 }

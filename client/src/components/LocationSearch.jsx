@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Search, MapPin, Loader2, X } from 'lucide-react';
 
-export default function LocationSearch({ placeholder, onSelectLocation, value, iconColor = 'text-slate-400' }) {
+export default function LocationSearch({ placeholder, onLocationInput, onSelectLocation, value, iconColor = 'text-slate-400' }) {
   const [query, setQuery] = useState(value || '');
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
+  const [searchError, setSearchError] = useState('');
   const dropdownRef = useRef(null);
 
   useEffect(() => {
@@ -24,6 +25,7 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       if (!query || query.trim().length < 3 || query === value) {
         setSuggestions([]);
@@ -32,6 +34,7 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
       }
 
       setLoading(true);
+      setSearchError('');
       try {
         const response = await axios.get('https://nominatim.openstreetmap.org/search', {
           params: {
@@ -41,18 +44,24 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
             limit: 5,
             countrycodes: 'in',
           },
-          // REMOVED 'User-Agent' header here to prevent browser security block
+          signal: controller.signal,
         });
         setSuggestions(response.data);
-        setIsOpen(true);
+        setIsOpen(response.data.length > 0);
       } catch (err) {
-        console.error('Search error:', err);
+        if (!axios.isCancel(err)) {
+          console.error('Search error:', err);
+          setSearchError('Location search is temporarily unavailable.');
+        }
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
-    }, 350);
+    }, 1000);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [query, value]);
 
   const handleSelect = (item) => {
@@ -69,7 +78,19 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
     setQuery('');
     setSuggestions([]);
     setIsOpen(false);
+    setSearchError('');
+    setLoading(false);
     onSelectLocation({ lat: null, lng: null, name: '' });
+  };
+
+  const handleChange = (event) => {
+    const nextQuery = event.target.value;
+    setQuery(nextQuery);
+    setSuggestions([]);
+    setIsOpen(false);
+    setSearchError('');
+    setLoading(false);
+    onLocationInput?.(nextQuery);
   };
 
   return (
@@ -79,32 +100,47 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
         <input
           type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={handleChange}
           placeholder={placeholder}
+          aria-label={placeholder}
           className="w-full bg-slate-900/95 backdrop-blur-md border border-slate-700 focus:border-emerald-500 text-slate-100 text-sm rounded-xl pl-9 pr-8 py-2.5 outline-none shadow-lg transition"
         />
-        {loading ? (
-          <Loader2 className="w-4 h-4 text-emerald-400 animate-spin absolute right-3 z-10" />
-        ) : query ? (
-          <button type="button" onClick={handleClear} className="absolute right-3 z-10 text-slate-400 hover:text-slate-100 transition">
+        {loading && (
+          <Loader2 className="w-4 h-4 text-emerald-400 animate-spin absolute right-9 z-10" aria-label="Searching locations" />
+        )}
+        {query && (
+          <button
+            type="button"
+            onClick={handleClear}
+            aria-label={`Clear ${placeholder}`}
+            className="absolute right-3 z-10 text-slate-400 hover:text-slate-100 transition"
+          >
             <X className="w-4 h-4" />
           </button>
-        ) : null}
+        )}
       </div>
 
+      {searchError && (
+        <p role="status" className="mt-1 text-[10px] text-rose-300">{searchError}</p>
+      )}
       {isOpen && suggestions.length > 0 && (
         <ul className="absolute z-50 w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto divide-y divide-slate-800 backdrop-blur-md">
           {suggestions.map((item) => (
             <li
               key={item.place_id}
-              onClick={() => handleSelect(item)}
-              className="px-3 py-2.5 hover:bg-slate-800 cursor-pointer text-xs transition flex items-start gap-2.5"
+              className="px-3 py-2.5 text-xs transition hover:bg-slate-800"
             >
-              <Search className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-semibold text-slate-100">{item.display_name.split(',')[0]}</p>
-                <p className="text-[10px] text-slate-400 truncate max-w-[240px]">{item.display_name}</p>
-              </div>
+              <button
+                type="button"
+                onClick={() => handleSelect(item)}
+                className="flex w-full items-start gap-2.5 text-left"
+              >
+                <Search className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span>
+                  <span className="block font-semibold text-slate-100">{item.display_name.split(',')[0]}</span>
+                  <span className="block max-w-[240px] truncate text-[10px] text-slate-400">{item.display_name}</span>
+                </span>
+              </button>
             </li>
           ))}
         </ul>

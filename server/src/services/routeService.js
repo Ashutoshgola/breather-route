@@ -20,35 +20,34 @@ const osrmRequest = async (coordinates) => {
   return response.data.routes || [];
 };
 
-const calculateRouteExposure = async (geometryCoordinates) => {
+const calculateRouteExposure = (geometryCoordinates, sensorNodes) => {
   const lineString = turf.lineString(geometryCoordinates);
   const sampledPoints = turf.lineChunk(lineString, 1, { units: 'kilometers' });
 
-  let totalPm25Exposure = 0;
-  let sampleCount = 0;
-
-  for (const feature of sampledPoints.features) {
-    const [lng, lat] = feature.geometry.coordinates[0];
-
-    try {
-      const nearestSensor = await SensorNode.findOne({
-        location: {
-          $near: {
-            $geometry: { type: 'Point', coordinates: [lng, lat] },$maxDistance: 25000
-          }
-        }
-      });
-
-      const nodePm25 = nearestSensor ? nearestSensor.pm25 : 85;
-      totalPm25Exposure += nodePm25;
-    } catch (err) {
-      totalPm25Exposure += 85;
-    }
-    sampleCount++;
+  if (sampledPoints.features.length === 0) {
+    return 85;
   }
 
-  const averagePm25 = sampleCount > 0 ? totalPm25Exposure / sampleCount : 85;
-  return Math.round(averagePm25);
+  const totalPm25Exposure = sampledPoints.features.reduce((total, feature) => {
+    const sampleLine = turf.lineString(feature.geometry.coordinates);
+    const samplePoint = turf.along(sampleLine, turf.length(sampleLine) / 2);
+    let weightedPm25 = 0;
+    let totalWeight = 0;
+
+    for (const sensor of sensorNodes) {
+      const [lng, lat] = sensor.location.coordinates;
+      const distanceKm = turf.distance(samplePoint, turf.point([lng, lat]));
+      if (distanceKm > 25) continue;
+
+      const weight = 1 / Math.max(distanceKm, 0.25) ** 2;
+      weightedPm25 += sensor.pm25 * weight;
+      totalWeight += weight;
+    }
+
+    return total + (totalWeight > 0 ? weightedPm25 / totalWeight : 85);
+  }, 0);
+
+  return Number((totalPm25Exposure / sampledPoints.features.length).toFixed(1));
 };
 
 const hasDistinctGeometry = (firstGeometry, secondGeometry) => {
@@ -117,9 +116,9 @@ const createAlternativeRoute = async (primaryRoute, startLng, startLat, endLng, 
   };
 };
 
-const evaluateRoute = async (route, index, vehicleProfile) => {
+const evaluateRoute = (route, index, vehicleProfile, sensorNodes) => {
   const { maxSpeedKph, exposureMultiplier } = VEHICLE_PROFILES[vehicleProfile];
-  const avgPm25 = await calculateRouteExposure(route.geometry.coordinates);
+  const avgPm25 = calculateRouteExposure(route.geometry.coordinates, sensorNodes);
   const minimumDurationSeconds = (route.distance / 1000 / maxSpeedKph) * 3600;
 
   return {
@@ -127,7 +126,7 @@ const evaluateRoute = async (route, index, vehicleProfile) => {
     durationMinutes: Math.ceil(Math.max(route.duration, minimumDurationSeconds) / 60),
     distanceKm: (route.distance / 1000).toFixed(2),
     avgPm25,
-    exposureScore: Math.round(avgPm25 * exposureMultiplier),
+    exposureScore: Number((avgPm25 * exposureMultiplier).toFixed(1)),
     geometry: route.geometry,
     isGeneratedAlternative: Boolean(route.isGeneratedAlternative),
   };
@@ -155,7 +154,10 @@ export const getSensorNodes = async () => SensorNode.find({
 
 export const getDualRoutes = async (startLng, startLat, endLng, endLat, vehicleProfile = 'carAuto') => {
   const selectedVehicle = VEHICLE_PROFILES[vehicleProfile] ? vehicleProfile : 'carAuto';
-  const routes = await osrmRequest(`${startLng},${startLat};${endLng},${endLat}`);
+  const [routes, sensorNodes] = await Promise.all([
+    osrmRequest(`${startLng},${startLat};${endLng},${endLat}`),
+    getSensorNodes(),
+  ]);
 
   if (!routes || routes.length === 0) {
     throw new Error('No routes found between selected points.');
@@ -183,7 +185,7 @@ export const getDualRoutes = async (startLng, startLat, endLng, endLat, vehicleP
   }
 
   const evaluatedRoutes = await Promise.all(
-    distinctRoutes.map((route, index) => evaluateRoute(route, index, selectedVehicle))
+    distinctRoutes.map((route, index) => evaluateRoute(route, index, selectedVehicle, sensorNodes))
   );
   const fastestRoute = [...evaluatedRoutes].sort((a, b) => a.durationMinutes - b.durationMinutes)[0];
   const healthiestRoute = [...evaluatedRoutes]

@@ -12,14 +12,11 @@ html, body, #root {
   overflow: hidden;
 }
 
-/* Ensure Leaflet container takes full viewport height */
 .leaflet-container {
   width: 100% !important;
-  height: 100% !important;
-  z-index: 1;
+  height: 100vh !important;
 }
 
-/* Ensure floating search overlay stays above map tiles */
 .google-maps-card {
   z-index: 1000 !important;
 }

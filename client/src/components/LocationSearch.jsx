@@ -25,8 +25,9 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
 
   useEffect(() => {
     const timer = setTimeout(async () => {
-      if (!query || query.trim().length < 3) {
+      if (!query || query.trim().length < 3 || query === value) {
         setSuggestions([]);
+        setIsOpen(false);
         return;
       }
 
@@ -40,7 +41,7 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
             limit: 5,
             countrycodes: 'in',
           },
-          headers: { 'User-Agent': 'BreatheRouteApp/1.0' },
+          // REMOVED 'User-Agent' header here to prevent browser security block
         });
         setSuggestions(response.data);
         setIsOpen(true);
@@ -52,7 +53,7 @@ export default function LocationSearch({ placeholder, onSelectLocation, value, i
     }, 350);
 
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, value]);
 
   const handleSelect = (item) => {
     const lat = parseFloat(item.lat);
